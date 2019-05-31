@@ -1,0 +1,306 @@
+#
+# This YAML file will create an elasticsearch cluster with 
+# GCE Persistent Disk mounted.
+# Author: tomasz.wojciechowski.82@gmail.com
+
+#
+# Before any kubernetes command will be executed first we need to 
+# create GCE Pesistent Disk so we need to run 
+# 
+# ```
+# gcloud compute disks create --size=5GB --zone=europe-west4-a elasticsearch-disk-0
+# gcloud compute disks create --size=5GB --zone=europe-west4-a elasticsearch-disk-1
+# gcloud compute disks create --size=5GB --zone=europe-west4-a elasticsearch-disk-3
+# ```
+
+#
+# Now we need to create PV and PVC resources for previously creates disks
+#
+
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: elastic-pv-0
+spec:
+  storageClassName: ""
+  capacity:
+    storage: 50G
+  accessModes:
+    - ReadWriteOnce
+  gcePersistentDisk:
+    pdName: elasticsearch-disk-0
+    fsType: ext4
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: elasticsearch-data-elasticsearch-0
+spec:
+  storageClassName: ""
+  volumeName: elastic-pv-0
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50G
+
+
+
+---
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: elastic-pv-1
+spec:
+  storageClassName: ""
+  capacity:
+    storage: 50G
+  accessModes:
+    - ReadWriteOnce
+  gcePersistentDisk:
+    pdName: elasticsearch-disk-1
+    fsType: ext4
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: elasticsearch-data-elasticsearch-1
+spec:
+  storageClassName: ""
+  volumeName: elastic-pv-1
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50G
+
+---
+kind: PersistentVolume
+apiVersion: v1
+metadata:
+  name: elastic-pv-2
+spec:
+  storageClassName: ""
+  capacity:
+    storage: 50G
+  accessModes:
+    - ReadWriteOnce
+  gcePersistentDisk:
+    pdName: elasticsearch-disk-2
+    fsType: ext4
+---
+kind: PersistentVolumeClaim
+apiVersion: v1
+metadata:
+  name: elasticsearch-data-elasticsearch-2
+spec:
+  storageClassName: ""
+  volumeName: elastic-pv-2
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 50G
+
+---
+
+#
+# Now we need to prepare config for our ES
+#
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: elasticsearch-config-files
+  labels:
+    role: elasticsearch-config-files
+data:
+  bash.bashrc: |
+    
+    [ -z "$PS1" ] && return
+    shopt -s checkwinsize
+    if [ -z "${debian_chroot:-}" ] && [ -r /etc/debian_chroot ]; then
+        debian_chroot=$(cat /etc/debian_chroot)
+    fi
+    PS1='${debian_chroot:+($debian_chroot)}\u@\h:\w\$->'
+    if ! shopt -oq posix; then
+      if [ -f /usr/share/bash-completion/bash_completion ]; then
+        . /usr/share/bash-completion/bash_completion
+      elif [ -f /etc/bash_completion ]; then
+        . /etc/bash_completion
+      fi
+    fi
+    if [ -x /usr/lib/command-not-found -o -x /usr/share/command-not-found/command-not-found ]; then
+      function command_not_found_handle {
+                    if [ -x /usr/lib/command-not-found ]; then
+          /usr/lib/command-not-found -- "$1"
+                      return $?
+                    elif [ -x /usr/share/command-not-found/command-not-found ]; then
+          /usr/share/command-not-found/command-not-found -- "$1"
+                      return $?
+        else
+          printf "%s: command not found\n" "$1" >&2
+          return 127
+        fi
+      }
+    fi
+---
+
+#
+# Lets create Service to make our ES publi
+# 
+apiVersion: v1
+kind: Service
+metadata:
+  name: "elasticsearch"
+  labels:
+    name: "elasticsearch"
+spec:
+  ports:
+  - port: 9200
+    targetPort: 9200
+    name: "rest-port"    
+  - port: 9300
+    targetPort: 9300
+    name: "node-com-port"
+  clusterIP: None
+  selector:
+    role: "elasticsearch"
+---
+
+#
+# Now we create StatefulSet
+#
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: "elasticsearch"
+spec:
+  serviceName: "elasticsearch"
+  replicas: 3
+  selector:
+    matchLabels:
+        role: "elasticsearch"
+  template:
+    metadata:
+      labels:
+        role: "elasticsearch"
+        env: "dev"
+    spec:
+      terminationGracePeriodSeconds: 300
+      initContainers:    
+      - name: fixPermissions
+        image: busybox
+        command:
+        - sh
+        - -c
+        - chown -R 1000:1000 /usr/share/elasticsearch/data
+        securityContext:
+          privileged: true
+        volumeMounts:
+        - name: elasticsearch-data
+          mountPath: /usr/share/elasticsearch/data
+      - name: increase-vm-max-map-count
+        image: busybox
+        command:
+        - sysctl
+        - -w
+        - vm.max_map_count=262144
+        securityContext:
+          privileged: true
+      - name: increase-the-ulimit
+        image: busybox
+        command:
+        - sh
+        - -c
+        - ulimit -n 65536
+        securityContext:
+          privileged: true
+      containers:
+        - name: elasticsearch       
+          image: docker.elastic.co/elasticsearch/elasticsearch:6.4.3  
+          ports:
+          - containerPort: 9200
+            name: http
+          - containerPort: 9300
+            name: tcp
+          # readinessProbe:
+          #   httpGet:
+          #     path: /
+          #     port: 80
+          #   initialDelaySeconds: 2
+          #   periodSeconds: 2
+          #   timeoutSeconds: 1
+          # livenessProbe:
+          #   httpGet:
+          #     path: /
+          #     port: 80
+          #   initialDelaySeconds: 300
+          #   periodSeconds: 5
+          #   timeoutSeconds: 1
+          resources:
+            limits:
+              cpu: "100m"
+              memory: "100Mi"
+            requests:
+              cpu: "100m"
+              memory: "100Mi"
+          env:
+            - name: "node.name"
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: "cluster.name"
+              value: my-es-cluster
+            - name: discovery.zen.ping.unicast.hosts
+              value: "elasticsearch-0.elasticsearch,elasticsearch-1.elasticsearch,elasticsearch-2.elasticsearch"
+            - name: discovery.zen.minimum_master_nodes
+              value: "2"
+            - name: network.host
+              value: "_site_,_local_"
+            - name: http.port
+              value: "9200"
+            - name: transport.tcp.port
+              value: "9300"
+            - name: ES_JAVA_OPTS
+              value: -Xms512m -Xmx512m
+            - name: PROCESSORS
+              valueFrom:
+                resourceFieldRef:
+                  resource: limits.cpu
+            - name: POD_IP
+              valueFrom:
+                fieldRef:
+                  fieldPath: status.podIP
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name      
+            - name: LAST_UPDATED
+              value: "__LAST_UPDATE__"              
+          volumeMounts:
+            - name: config-files
+              mountPath: /etc/bash.bashrc
+              subPath: bash.bashrc
+            - name: elasticsearch-data
+              mountPath: /usr/share/elasticsearch/data
+      volumes:
+      - name:  config-files
+        configMap:
+          name: elasticsearch-config-files
+#
+# Now we define Volume Claim Template. This is required, because this 
+# component will search PVCs with name `<pvc template name>-<pod name>-<index>` 
+# in this this will be `elasticsearch-data-elasticsearch-0`. If such PVC exists 
+# then it is reused.
+# 
+  volumeClaimTemplates:
+  - metadata:
+      name: elasticsearch-data
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: "standard"
+      resources:
+        requests:
+          storage: 50Gi
+---
